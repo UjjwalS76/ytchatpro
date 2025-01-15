@@ -5,7 +5,7 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationBufferMemory
 from langchain.vectorstores import FAISS
-from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound, VideoUnavailable
+from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound, VideoUnavailable, CouldNotRetrieveTranscript
 
 # Configure Streamlit
 st.set_page_config(page_title="YouTube Chatbot", layout="wide")
@@ -16,7 +16,7 @@ st.sidebar.header("🔧 Configuration")
 
 # Input for YouTube URL
 youtube_url = st.sidebar.text_input(
-    "Enter a YouTube video URL (e.g. https://www.youtube.com/watch?v=VIDEO_ID)",
+    "Enter a YouTube video URL (e.g., https://www.youtube.com/watch?v=VIDEO_ID)",
     value=""
 )
 
@@ -51,38 +51,38 @@ def extract_video_id(url: str) -> str:
 
 def fetch_transcript_text(video_id: str) -> str:
     """
-    Attempt to fetch the transcript from YouTube for the given video_id.
-    We try multiple language lists to include auto-generated transcripts.
-    If no transcript is found or disabled, an exception is raised.
+    Fetch the transcript for the given video_id.
+    Attempts to retrieve manual transcripts first, then auto-generated ones.
+    Raises exceptions if transcripts are unavailable.
     """
-    # Try these languages first (manual captions in English or variants)
-    lang_priority = ["en", "en-US", "en-GB"]
-    
-    # If manual transcripts fail, we'll attempt an auto-generated fallback
-    # 'a' is a hack that triggers auto-generated transcripts in youtube_transcript_api.
-    lang_autogen = ["a"]
-
-    transcript_text = None
-    
-    # First, try priority languages:
     try:
-        transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=lang_priority)
-        transcript_text = " ".join([item["text"] for item in transcript_list])
-        return transcript_text
-    except (TranscriptsDisabled, NoTranscriptFound, VideoUnavailable):
-        pass
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+    except VideoUnavailable:
+        raise VideoUnavailable("This video is unavailable or private.")
+    except TranscriptsDisabled:
+        raise TranscriptsDisabled("Transcripts are disabled for this video.")
     except Exception as e:
-        # If some other error occurs, re-raise it
-        raise e
+        raise CouldNotRetrieveTranscript(f"An unexpected error occurred: {e}")
 
-    # If that fails, attempt auto-generated transcripts
+    # Attempt to fetch a manual English transcript
     try:
-        transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=lang_autogen)
-        transcript_text = " ".join([item["text"] for item in transcript_list])
+        transcript = transcript_list.find_transcript(['en'])
+        transcript_data = transcript.fetch()
+        transcript_text = " ".join([item["text"] for item in transcript_data])
         return transcript_text
+    except NoTranscriptFound:
+        # If no manual transcript, try auto-generated
+        try:
+            transcript = transcript_list.find_transcript(['en', 'a.en'])
+            transcript_data = transcript.fetch()
+            transcript_text = " ".join([item["text"] for item in transcript_data])
+            return transcript_text
+        except NoTranscriptFound:
+            # No transcript available
+            raise NoTranscriptFound("No manual or auto-generated English transcript found for this video.")
     except Exception as e:
-        # If it fails again, we pass back the original error
-        raise e
+        # Any other exceptions
+        raise CouldNotRetrieveTranscript(f"An unexpected error occurred while fetching the transcript: {e}")
 
 def split_text_into_docs(text: str):
     """
@@ -116,7 +116,8 @@ def create_faiss_vectorstore(docs, embedding_fn):
     """
     texts = [doc.page_content for doc in docs]
     metadatas = [doc.metadata for doc in docs]
-    return FAISS.from_texts(texts, embedding_fn, metadatas=metadatas)
+    vectorstore = FAISS.from_texts(texts, embedding_fn, metadatas=metadatas)
+    return vectorstore
 
 # Main logic
 if youtube_url:
@@ -139,8 +140,11 @@ if youtube_url:
     except VideoUnavailable:
         st.error("❌ This video is unavailable or private. Cannot retrieve a transcript.")
         st.stop()
+    except CouldNotRetrieveTranscript as e:
+        st.error(f"❌ Could not retrieve transcript: {e}")
+        st.stop()
     except Exception as e:
-        st.error(f"Error fetching transcript: {e}")
+        st.error(f"❌ An unexpected error occurred: {e}")
         st.stop()
 
     # If transcript_text is still None or empty, stop
@@ -158,20 +162,32 @@ if youtube_url:
     # Get embeddings and vector store
     embeddings = get_embeddings(google_api_key)
     with st.spinner("📦 Creating FAISS vector store..."):
-        vectorstore = create_faiss_vectorstore(docs, embeddings)
+        try:
+            vectorstore = create_faiss_vectorstore(docs, embeddings)
+        except Exception as e:
+            st.error(f"❌ Error creating vector store: {e}")
+            st.stop()
 
     # Initialize LLM
-    llm = get_llm(google_api_key)
+    try:
+        llm = get_llm(google_api_key)
+    except Exception as e:
+        st.error(f"❌ Error initializing LLM: {e}")
+        st.stop()
 
     # Conversation memory
     memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
 
     # Create Conversational Retrieval Chain
-    qa_chain = ConversationalRetrievalChain.from_llm(
-        llm=llm,
-        retriever=vectorstore.as_retriever(),
-        memory=memory
-    )
+    try:
+        qa_chain = ConversationalRetrievalChain.from_llm(
+            llm=llm,
+            retriever=vectorstore.as_retriever(),
+            memory=memory
+        )
+    except Exception as e:
+        st.error(f"❌ Error creating Conversational Retrieval Chain: {e}")
+        st.stop()
 
     # Chat Interface
     st.header("💬 Ask questions about the video:")
@@ -185,7 +201,7 @@ if youtube_url:
                 st.session_state.setdefault('questions', []).append(user_input)
                 st.session_state.setdefault('responses', []).append(answer)
             except Exception as e:
-                st.error(f"Error generating response: {e}")
+                st.error(f"❌ Error generating response: {e}")
 
     # Display chat history
     if 'responses' in st.session_state and st.session_state.responses:

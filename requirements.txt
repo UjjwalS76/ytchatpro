@@ -1,0 +1,8 @@
+streamlit
+langchain
+langchain-google-genai
+langchain-community
+beautifulsoup4
+requests
+faiss-cpu
+youtube-transcript-api

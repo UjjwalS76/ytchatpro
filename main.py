@@ -5,46 +5,35 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationBufferMemory
 from langchain.vectorstores import FAISS
-from youtube_transcript_api import (
-    YouTubeTranscriptApi,
-    TranscriptsDisabled,
-    NoTranscriptFound,
-    VideoUnavailable,
-    CouldNotRetrieveTranscript,
-    TranscriptList
-)
+from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound, VideoUnavailable
 
 # Configure Streamlit
 st.set_page_config(page_title="YouTube Chatbot", layout="wide")
 st.title("🎥 Chat with a YouTube Video's Transcript")
+
+# Initialize session state for chat history
+if 'chat_history' not in st.session_state:
+    st.session_state.chat_history = []
 
 # Sidebar configuration
 st.sidebar.header("🔧 Configuration")
 
 # Input for YouTube URL
 youtube_url = st.sidebar.text_input(
-    "Enter a YouTube video URL (e.g., https://www.youtube.com/watch?v=VIDEO_ID)",
-    value=""
+    "Enter a YouTube video URL",
+    placeholder="https://www.youtube.com/watch?v=VIDEO_ID"
 )
 
 def get_google_api_key():
-    """
-    Retrieve the Google API key from Streamlit's secrets.
-    If not found, stop the app with an error.
-    """
-    if "GOOGLE_API_KEY" not in st.secrets:
+    """Retrieve the Google API key from Streamlit's secrets."""
+    api_key = st.secrets.get("GOOGLE_API_KEY")
+    if not api_key:
         st.error("❌ Google API key not found in Streamlit secrets.")
         st.stop()
-    return st.secrets["GOOGLE_API_KEY"]
+    return api_key
 
 def extract_video_id(url: str) -> str:
-    """
-    Extract the YouTube video ID from a given URL.
-    Supports typical YouTube link formats:
-    - https://www.youtube.com/watch?v=VIDEO_ID
-    - https://youtu.be/VIDEO_ID
-    - https://www.youtube.com/embed/VIDEO_ID
-    """
+    """Extract the YouTube video ID from various URL formats."""
     patterns = [
         r"youtu\.be/([^#&\?]+)",
         r"youtube\.com.*v=([^#&\?]+)",
@@ -56,185 +45,111 @@ def extract_video_id(url: str) -> str:
             return match.group(1)
     return ""
 
-def list_available_transcripts(video_id: str) -> TranscriptList:
-    """
-    List all available transcripts for the given video_id.
-    """
+def get_transcript(video_id: str) -> str:
+    """Fetch and combine transcript segments."""
     try:
         transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-        return transcript_list
-    except VideoUnavailable:
-        raise Exception("❌ This video is unavailable or private.")
-    except TranscriptsDisabled:
-        raise Exception("❌ Transcripts are disabled for this video.")
-    except Exception as e:
-        raise Exception(f"❌ An unexpected error occurred: {e}")
-
-def fetch_transcript_text(transcript, video_id: str) -> str:
-    """
-    Fetch the transcript text from the Transcript object.
-    """
-    try:
-        transcript_data = transcript.fetch()
-        transcript_text = " ".join([item['text'] for item in transcript_data])
-        return transcript_text
-    except Exception as e:
-        raise Exception(f"❌ Error fetching transcript: {e}")
-
-def split_text_into_docs(text: str):
-    """
-    Split a string of text into documents using RecursiveCharacterTextSplitter.
-    """
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-    docs = splitter.create_documents([text])
-    return docs
-
-def get_embeddings(api_key: str):
-    """
-    Initialize GoogleGenerativeAIEmbeddings with the given API key.
-    """
-    return GoogleGenerativeAIEmbeddings(
-        model="models/embedding-001",
-        api_key=api_key
-    )
-
-def get_llm(api_key: str):
-    """
-    Initialize the ChatGoogleGenerativeAI LLM (Gemini model).
-    """
-    return ChatGoogleGenerativeAI(
-        model="gemini-1.5-flash-002",
-        api_key=api_key
-    )
-
-def create_faiss_vectorstore(docs, embedding_fn):
-    """
-    Create a FAISS vector store from documents (docs).
-    """
-    texts = [doc.page_content for doc in docs]
-    metadatas = [doc.metadata for doc in docs]
-    vectorstore = FAISS.from_texts(texts, embedding_fn, metadatas=metadatas)
-    return vectorstore
-
-# Main logic
-if youtube_url:
-    # Extract the video_id
-    video_id = extract_video_id(youtube_url)
-    if not video_id:
-        st.error("❌ Unable to extract a valid video ID. Please check the URL.")
-        st.stop()
-
-    # List available transcripts
-    try:
-        with st.spinner("📄 Listing available transcripts..."):
-            transcript_list = list_available_transcripts(video_id)
-    except Exception as e:
-        st.error(f"{e}")
-        st.stop()
-
-    # Get available languages
-    available_languages = []
-    for transcript in transcript_list:
-        if transcript.is_generated:
-            lang = f"Auto-generated ({transcript.language})"
-        else:
-            lang = f"Manually created ({transcript.language})"
-        available_languages.append(lang)
-
-    if not available_languages:
-        st.error("❌ No transcripts available for this video.")
-        st.stop()
-
-    # User selects transcript
-    selected_lang = st.selectbox(
-        "Select Transcript Language:",
-        options=available_languages
-    )
-
-    # Map selected language back to transcript object
-    selected_transcript = None
-    for transcript in transcript_list:
-        if transcript.is_generated:
-            lang = f"Auto-generated ({transcript.language})"
-        else:
-            lang = f"Manually created ({transcript.language})"
-        if lang == selected_lang:
-            selected_transcript = transcript
-            break
-
-    if not selected_transcript:
-        st.error("❌ Selected transcript not found.")
-        st.stop()
-
-    # Fetch transcript text
-    try:
-        with st.spinner("🎬 Fetching transcript..."):
-            transcript_text = fetch_transcript_text(selected_transcript, video_id)
-    except Exception as e:
-        st.error(f"{e}")
-        st.stop()
-
-    # If transcript_text is still None or empty, stop
-    if not transcript_text:
-        st.error("❌ No transcript retrieved; please try another video.")
-        st.stop()
-
-    # Split into documents
-    with st.spinner("🛠️ Splitting transcript into chunks..."):
-        docs = split_text_into_docs(transcript_text)
-
-    # Retrieve Google API key from Streamlit secrets
-    google_api_key = get_google_api_key()
-
-    # Get embeddings and vector store
-    embeddings = get_embeddings(google_api_key)
-    with st.spinner("📦 Creating FAISS vector store..."):
+        # Try to get manual transcripts first, fall back to auto-generated
         try:
-            vectorstore = create_faiss_vectorstore(docs, embeddings)
-        except Exception as e:
-            st.error(f"❌ Error creating vector store: {e}")
-            st.stop()
-
-    # Initialize LLM
-    try:
-        llm = get_llm(google_api_key)
+            transcript = transcript_list.find_manually_created_transcript()
+        except:
+            transcript = transcript_list.find_generated_transcript()
+            
+        segments = transcript.fetch()
+        return " ".join(segment["text"] for segment in segments)
     except Exception as e:
-        st.error(f"❌ Error initializing LLM: {e}")
-        st.stop()
+        st.error(f"❌ Error fetching transcript: {str(e)}")
+        return ""
 
-    # Conversation memory
-    memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
-
-    # Create Conversational Retrieval Chain
+def create_conversational_chain(transcript_text: str, api_key: str):
+    """Create the conversational chain with the transcript."""
     try:
-        qa_chain = ConversationalRetrievalChain.from_llm(
+        # Split text into chunks
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1000,
+            chunk_overlap=200,
+            length_function=len
+        )
+        docs = text_splitter.create_documents([transcript_text])
+
+        # Create embeddings
+        embeddings = GoogleGenerativeAIEmbeddings(
+            model="models/embedding-001",
+            google_api_key=api_key
+        )
+
+        # Create vector store
+        vectorstore = FAISS.from_documents(docs, embeddings)
+
+        # Initialize LLM
+        llm = ChatGoogleGenerativeAI(
+            model="gemini-1.5-flash-002",
+            google_api_key=api_key,
+            temperature=0.7
+        )
+
+        # Create memory
+        memory = ConversationBufferMemory(
+            memory_key="chat_history",
+            return_messages=True
+        )
+
+        # Create chain
+        chain = ConversationalRetrievalChain.from_llm(
             llm=llm,
             retriever=vectorstore.as_retriever(),
-            memory=memory
+            memory=memory,
+            return_source_documents=True
         )
+        
+        return chain
     except Exception as e:
-        st.error(f"❌ Error creating Conversational Retrieval Chain: {e}")
-        st.stop()
+        st.error(f"❌ Error creating conversation chain: {str(e)}")
+        return None
 
-    # Chat Interface
-    st.header("💬 Ask questions about the video:")
-    user_input = st.text_input("You:", key="input")
+def main():
+    if youtube_url:
+        video_id = extract_video_id(youtube_url)
+        if not video_id:
+            st.error("❌ Invalid YouTube URL. Please check the format.")
+            return
 
-    if st.button("Send") and user_input.strip():
-        with st.spinner("🧠 Generating response..."):
-            try:
-                response = qa_chain({"question": user_input})
-                answer = response['answer']
-                st.session_state.setdefault('questions', []).append(user_input)
-                st.session_state.setdefault('responses', []).append(answer)
-            except Exception as e:
-                st.error(f"❌ Error generating response: {e}")
+        # Get transcript
+        transcript_text = get_transcript(video_id)
+        if not transcript_text:
+            return
 
-    # Display chat history
-    if 'responses' in st.session_state and st.session_state.responses:
-        st.markdown("### 🗨️ Chat History")
-        for i in range(len(st.session_state.responses)):
-            st.markdown(f"**You:** {st.session_state.questions[i]}")
-            st.markdown(f"**Bot:** {st.session_state.responses[i]}")
-else:
-    st.info("🔄 Please enter a valid YouTube URL to get started.")
+        # Get API key and create chain
+        api_key = get_google_api_key()
+        qa_chain = create_conversational_chain(transcript_text, api_key)
+        if not qa_chain:
+            return
+
+        # Chat interface
+        st.header("💬 Ask questions about the video:")
+        user_input = st.text_input("Your question:", key="user_input")
+
+        if st.button("Send", key="send_button") and user_input:
+            with st.spinner("🤔 Thinking..."):
+                try:
+                    response = qa_chain({"question": user_input})
+                    st.session_state.chat_history.append({
+                        "question": user_input,
+                        "answer": response["answer"]
+                    })
+                except Exception as e:
+                    st.error(f"❌ Error generating response: {str(e)}")
+
+        # Display chat history
+        if st.session_state.chat_history:
+            st.markdown("### 📝 Chat History")
+            for entry in st.session_state.chat_history:
+                with st.container():
+                    st.markdown(f"**You:** {entry['question']}")
+                    st.markdown(f"**Bot:** {entry['answer']}")
+                    st.markdown("---")
+    else:
+        st.info("👋 Enter a YouTube URL to start chatting about the video!")
+
+if __name__ == "__main__":
+    main()

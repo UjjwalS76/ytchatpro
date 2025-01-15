@@ -5,7 +5,13 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationBufferMemory
 from langchain.vectorstores import FAISS
-from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound, VideoUnavailable, CouldNotRetrieveTranscript
+from youtube_transcript_api import (
+    YouTubeTranscriptApi,
+    TranscriptsDisabled,
+    NoTranscriptFound,
+    VideoUnavailable,
+    CouldNotRetrieveTranscript
+)
 
 # Configure Streamlit
 st.set_page_config(page_title="YouTube Chatbot", layout="wide")
@@ -64,25 +70,26 @@ def fetch_transcript_text(video_id: str) -> str:
     except Exception as e:
         raise CouldNotRetrieveTranscript(f"An unexpected error occurred: {e}")
 
-    # Attempt to fetch a manual English transcript
+    # Attempt to fetch a manually created English transcript
     try:
-        transcript = transcript_list.find_transcript(['en'])
+        transcript = transcript_list.find_manually_created_transcript(['en'])
         transcript_data = transcript.fetch()
-        transcript_text = " ".join([item["text"] for item in transcript_data])
+        transcript_text = " ".join([item['text'] for item in transcript_data])
         return transcript_text
     except NoTranscriptFound:
-        # If no manual transcript, try auto-generated
-        try:
-            transcript = transcript_list.find_transcript(['en', 'a.en'])
-            transcript_data = transcript.fetch()
-            transcript_text = " ".join([item["text"] for item in transcript_data])
-            return transcript_text
-        except NoTranscriptFound:
-            # No transcript available
-            raise NoTranscriptFound("No manual or auto-generated English transcript found for this video.")
-    except Exception as e:
-        # Any other exceptions
-        raise CouldNotRetrieveTranscript(f"An unexpected error occurred while fetching the transcript: {e}")
+        pass  # Proceed to try auto-generated transcripts
+
+    # Attempt to fetch an auto-generated English transcript
+    try:
+        transcript = transcript_list.find_generated_transcript(['en'])
+        transcript_data = transcript.fetch()
+        transcript_text = " ".join([item['text'] for item in transcript_data])
+        return transcript_text
+    except NoTranscriptFound:
+        pass  # No transcripts available
+
+    # If no transcript found
+    raise NoTranscriptFound("No manual or auto-generated English transcript found for this video.")
 
 def split_text_into_docs(text: str):
     """

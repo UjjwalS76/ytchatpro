@@ -10,7 +10,8 @@ from youtube_transcript_api import (
     TranscriptsDisabled,
     NoTranscriptFound,
     VideoUnavailable,
-    CouldNotRetrieveTranscript
+    CouldNotRetrieveTranscript,
+    TranscriptList
 )
 
 # Configure Streamlit
@@ -55,14 +56,13 @@ def extract_video_id(url: str) -> str:
             return match.group(1)
     return ""
 
-def fetch_transcript_text(video_id: str) -> str:
+def list_available_transcripts(video_id: str) -> TranscriptList:
     """
-    Fetch the transcript for the given video_id.
-    Attempts to retrieve manual transcripts first, then auto-generated ones.
-    Raises exceptions if transcripts are unavailable.
+    List all available transcripts for the given video_id.
     """
     try:
         transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        return transcript_list
     except VideoUnavailable:
         raise Exception("❌ This video is unavailable or private.")
     except TranscriptsDisabled:
@@ -70,26 +70,16 @@ def fetch_transcript_text(video_id: str) -> str:
     except Exception as e:
         raise Exception(f"❌ An unexpected error occurred: {e}")
 
-    # Attempt to fetch a manually created English transcript
+def fetch_transcript_text(transcript, video_id: str) -> str:
+    """
+    Fetch the transcript text from the Transcript object.
+    """
     try:
-        transcript = transcript_list.find_manually_created_transcript(['en'])
         transcript_data = transcript.fetch()
         transcript_text = " ".join([item['text'] for item in transcript_data])
         return transcript_text
-    except NoTranscriptFound:
-        pass  # Proceed to try auto-generated transcripts
-
-    # Attempt to fetch an auto-generated English transcript
-    try:
-        transcript = transcript_list.find_generated_transcript(['en'])
-        transcript_data = transcript.fetch()
-        transcript_text = " ".join([item['text'] for item in transcript_data])
-        return transcript_text
-    except NoTranscriptFound:
-        pass  # No transcripts available
-
-    # If no transcript found
-    raise Exception("❌ No manual or auto-generated English transcript found for this video.")
+    except Exception as e:
+        raise Exception(f"❌ Error fetching transcript: {e}")
 
 def split_text_into_docs(text: str):
     """
@@ -134,10 +124,52 @@ if youtube_url:
         st.error("❌ Unable to extract a valid video ID. Please check the URL.")
         st.stop()
 
-    # Fetch transcript
+    # List available transcripts
+    try:
+        with st.spinner("📄 Listing available transcripts..."):
+            transcript_list = list_available_transcripts(video_id)
+    except Exception as e:
+        st.error(f"{e}")
+        st.stop()
+
+    # Get available languages
+    available_languages = []
+    for transcript in transcript_list:
+        if transcript.is_generated:
+            lang = f"Auto-generated ({transcript.language})"
+        else:
+            lang = f"Manually created ({transcript.language})"
+        available_languages.append(lang)
+
+    if not available_languages:
+        st.error("❌ No transcripts available for this video.")
+        st.stop()
+
+    # User selects transcript
+    selected_lang = st.selectbox(
+        "Select Transcript Language:",
+        options=available_languages
+    )
+
+    # Map selected language back to transcript object
+    selected_transcript = None
+    for transcript in transcript_list:
+        if transcript.is_generated:
+            lang = f"Auto-generated ({transcript.language})"
+        else:
+            lang = f"Manually created ({transcript.language})"
+        if lang == selected_lang:
+            selected_transcript = transcript
+            break
+
+    if not selected_transcript:
+        st.error("❌ Selected transcript not found.")
+        st.stop()
+
+    # Fetch transcript text
     try:
         with st.spinner("🎬 Fetching transcript..."):
-            transcript_text = fetch_transcript_text(video_id)
+            transcript_text = fetch_transcript_text(selected_transcript, video_id)
     except Exception as e:
         st.error(f"{e}")
         st.stop()

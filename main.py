@@ -64,11 +64,11 @@ def fetch_transcript_text(video_id: str) -> str:
     try:
         transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
     except VideoUnavailable:
-        raise VideoUnavailable("This video is unavailable or private.")
+        raise Exception("❌ This video is unavailable or private.")
     except TranscriptsDisabled:
-        raise TranscriptsDisabled("Transcripts are disabled for this video.")
+        raise Exception("❌ Transcripts are disabled for this video.")
     except Exception as e:
-        raise CouldNotRetrieveTranscript(f"An unexpected error occurred: {e}")
+        raise Exception(f"❌ An unexpected error occurred: {e}")
 
     # Attempt to fetch a manually created English transcript
     try:
@@ -89,7 +89,7 @@ def fetch_transcript_text(video_id: str) -> str:
         pass  # No transcripts available
 
     # If no transcript found
-    raise NoTranscriptFound("No manual or auto-generated English transcript found for this video.")
+    raise Exception("❌ No manual or auto-generated English transcript found for this video.")
 
 def split_text_into_docs(text: str):
     """
@@ -138,20 +138,8 @@ if youtube_url:
     try:
         with st.spinner("🎬 Fetching transcript..."):
             transcript_text = fetch_transcript_text(video_id)
-    except TranscriptsDisabled:
-        st.error("❌ Subtitles are disabled for this video. No transcript available.")
-        st.stop()
-    except NoTranscriptFound:
-        st.error("❌ No transcript found (manual or auto-generated). This video may not support transcripts.")
-        st.stop()
-    except VideoUnavailable:
-        st.error("❌ This video is unavailable or private. Cannot retrieve a transcript.")
-        st.stop()
-    except CouldNotRetrieveTranscript as e:
-        st.error(f"❌ Could not retrieve transcript: {e}")
-        st.stop()
     except Exception as e:
-        st.error(f"❌ An unexpected error occurred: {e}")
+        st.error(f"{e}")
         st.stop()
 
     # If transcript_text is still None or empty, stop

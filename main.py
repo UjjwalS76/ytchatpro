@@ -5,7 +5,7 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationBufferMemory
 from langchain.vectorstores import FAISS
-from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound, VideoUnavailable
 
 # Configure Streamlit
 st.set_page_config(page_title="YouTube Chatbot", layout="wide")
@@ -51,13 +51,38 @@ def extract_video_id(url: str) -> str:
 
 def fetch_transcript_text(video_id: str) -> str:
     """
-    Fetch the transcript from YouTube for the given video_id
-    and return it as a single string. 
-    Raises an exception if no transcript is available.
+    Attempt to fetch the transcript from YouTube for the given video_id.
+    We try multiple language lists to include auto-generated transcripts.
+    If no transcript is found or disabled, an exception is raised.
     """
-    transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['en'])
-    transcript_text = " ".join([item["text"] for item in transcript_list])
-    return transcript_text
+    # Try these languages first (manual captions in English or variants)
+    lang_priority = ["en", "en-US", "en-GB"]
+    
+    # If manual transcripts fail, we'll attempt an auto-generated fallback
+    # 'a' is a hack that triggers auto-generated transcripts in youtube_transcript_api.
+    lang_autogen = ["a"]
+
+    transcript_text = None
+    
+    # First, try priority languages:
+    try:
+        transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=lang_priority)
+        transcript_text = " ".join([item["text"] for item in transcript_list])
+        return transcript_text
+    except (TranscriptsDisabled, NoTranscriptFound, VideoUnavailable):
+        pass
+    except Exception as e:
+        # If some other error occurs, re-raise it
+        raise e
+
+    # If that fails, attempt auto-generated transcripts
+    try:
+        transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=lang_autogen)
+        transcript_text = " ".join([item["text"] for item in transcript_list])
+        return transcript_text
+    except Exception as e:
+        # If it fails again, we pass back the original error
+        raise e
 
 def split_text_into_docs(text: str):
     """
@@ -105,8 +130,22 @@ if youtube_url:
     try:
         with st.spinner("🎬 Fetching transcript..."):
             transcript_text = fetch_transcript_text(video_id)
+    except TranscriptsDisabled:
+        st.error("❌ Subtitles are disabled for this video. No transcript available.")
+        st.stop()
+    except NoTranscriptFound:
+        st.error("❌ No transcript found (manual or auto-generated). This video may not support transcripts.")
+        st.stop()
+    except VideoUnavailable:
+        st.error("❌ This video is unavailable or private. Cannot retrieve a transcript.")
+        st.stop()
     except Exception as e:
         st.error(f"Error fetching transcript: {e}")
+        st.stop()
+
+    # If transcript_text is still None or empty, stop
+    if not transcript_text:
+        st.error("❌ No transcript retrieved; please try another video.")
         st.stop()
 
     # Split into documents
